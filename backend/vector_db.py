@@ -1,60 +1,60 @@
 import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 
-embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
-client = chromadb.Client(Settings(
-    chroma_db_impl="duckdb+parquet",
-    persist_directory="vectorstore"
-))
+chroma_client = chromadb.PersistentClient(path="vectorstore")
 
-collection = client.get_or_create_collection(
-    name="study_materials",
-    metadata={"hnsw:space": "cosine"}
+
+collection = chroma_client.get_or_create_collection(
+    name="notes",                     
+    metadata={"hnsw:space": "cosine"} 
 )
 
 
-
-def get_embedding(text):
-    return embedding_model.encode(text).tolist()
-
-
 def add_to_chroma(chunks):
-    ids = []
-    embeddings = []
-    texts = []
-    metadatas = []
+    """
+    chunks = [
+        {
+            "id": "unique-uuid",
+            "text": "chunk text",
+            "source": "filename",
+        },
+        ...
+    ]
+    """
 
-    for chunk in chunks:
-        ids.append(chunk["id"])
-        texts.append(chunk["text"])
-        embeddings.append(get_embedding(chunk["text"]))
+    ids = [chunk["id"] for chunk in chunks]
+    texts = [chunk["text"] for chunk in chunks]
+    metadatas = [{"source": chunk["source"]} for chunk in chunks]
 
-        metadatas.append({
-            "filename": chunk["filename"],
-            "index": chunk["index"]
-        })
+    
+    embeddings = model.encode(texts).tolist()
 
+    
     collection.add(
         ids=ids,
-        embeddings=embeddings,
         documents=texts,
-        metadatas=metadatas
+        metadatas=metadatas,
+        embeddings=embeddings,
     )
 
-    client.persist()  
+    return True
 
 
 
-def query_chroma(query, n_results=3):
-    query_embedding = get_embedding(query)
+def query_chroma(question, n=5):
+    """
+    Returns top-n matching chunks for a user question.
+    """
+
+    query_embedding = model.encode([question]).tolist()
 
     results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=n_results
+        query_embeddings=query_embedding,
+        n_results=n
     )
 
     return results

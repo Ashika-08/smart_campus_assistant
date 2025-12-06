@@ -1,74 +1,35 @@
-import re
-import uuid
 import nltk
+import uuid
 from nltk.tokenize import sent_tokenize
 
+nltk.download("punkt", quiet=True)
 
-def clean_text(text):
-    if not text:
-        return ""
+def process_text(text, filename):
+    """
+    Splits extracted text into chunks + adds metadata.
+    """
 
-    
-    text = re.sub(r"\n+", "\n", text)
-
-   
-    text = re.sub(r"[^\x00-\x7F]+", " ", text)
-
-   
-    text = re.sub(r"\s+", " ", text)
-
-    
-    text = text.strip()
-
-    return text
-
-
-
-def split_into_sentences(text):
-    return sent_tokenize(text)
-
-
-
-def chunk_text(sentences, max_words=500):
+    sentences = sent_tokenize(text)
     chunks = []
-    current_chunk = []
-    word_count = 0
+    current_chunk = ""
 
     for sentence in sentences:
-        sentence_words = len(sentence.split())
+        if len(current_chunk) + len(sentence) < 500:
+            current_chunk += " " + sentence
+        else:
+            chunks.append({
+                "id": str(uuid.uuid4()),
+                "text": current_chunk.strip(),
+                "source": filename    
+            })
+            current_chunk = sentence
 
-        
-        if word_count + sentence_words > max_words:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = []
-            word_count = 0
-
-        current_chunk.append(sentence)
-        word_count += sentence_words
-
-   
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
+    
+    if current_chunk.strip():
+        chunks.append({
+            "id": str(uuid.uuid4()),
+            "text": current_chunk.strip(),
+            "source": filename        # ← IMPORTANT
+        })
 
     return chunks
-
-
-
-def process_text(text, filename="unknown"):
-    cleaned = clean_text(text)
-    sentences = split_into_sentences(cleaned)
-    chunks = chunk_text(sentences)
-
-    processed = []
-
-    for index, chunk in enumerate(chunks):
-        entry = {
-            "id": str(uuid.uuid4()),
-            "filename": filename,
-            "index": index,
-            "text": chunk,
-            "length": len(chunk.split())
-        }
-        processed.append(entry)
-
-    return processed
