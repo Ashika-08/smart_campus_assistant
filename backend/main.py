@@ -1,146 +1,140 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+# main.py
 import os
 import shutil
-from vector_db import (
-    process_text,
-    add_to_chroma,
-    hybrid_retrieve,
-    rerank_with_cross_encoder,
-)
-import ollama
-import json
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi.responses import JSONResponse
+from typing import List
+from extract_text import extract_text
+from text_processing import process_text
+from vector_db import add_to_chroma, hybrid_retrieve, rerank_with_cross_encoder, get_chunk_by_id
 
-app = FastAPI()
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except Exception:
+    OLLAMA_AVAILABLE = False
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+app = FastAPI(title="Smart RAG Backend (v1.5)")
 
-def detect_hallucination(answer: str, context_chunks: list) -> bool:
+
+def call_llm(prompt: str, model: str = "llama3:latest", max_tokens: int = 512):
     """
-    Returns True if the LLM appears to add new information
-    that does NOT appear in the retrieved chunks.
+    Calls local Ollama. If ollama not available, raise an error so user can swap in OpenAI or another client.
     """
-
+    if not OLLAMA_AVAILABLE:
+        raise RuntimeError("ollama package not available. Install ollama python package OR replace call_llm with your preferred LLM client.")
     
-    context_text = " ".join([c["text"].lower() for c in context_chunks])
-    ans = answer.lower()
-
-   
-    important_words = [w for w in ans.split() if len(w) > 4]
-    missing = [w for w in important_words if w not in context_text]
-
-    if len(missing) > 6:  
-        return True
-
-    
-    patterns = ["4x4", "binary tree", "linked list", "database", "sorting"]
-    for p in patterns:
-        if p in ans and p not in context_text:
-            return True
-
-   
-    if ("code" in ans or "example" in ans) and "code" not in context_text:
-        return True
-
-    return False
-
+    resp = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
+    return resp["message"]["content"]
 
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    return {"filename": file.filename, "status": "uploaded"}
-
-
-
-@app.post("/process_file")
-async def process_file(filename: str):
-    file_path = os.path.join(UPLOAD_DIR, filename)
-
-    if not os.path.exists(file_path):
-        return {"error": "File not found"}
-
-   
-    from text_extract import extract_text
     text = extract_text(file_path)
-
-    chunks = process_text(text, filename)
-    add_to_chroma(chunks)
-
-    return {"status": "processed", "chunks": len(chunks)}
+    preview = text[:400]
+    return {"filename": file.filename, "preview": preview, "full_text_length": len(text)}
 
 
-@app.post("/ask")
-async def ask_question(question: str):
-    # --- STEP 1: Hybrid retrieve ---
-    hybrid_results = hybrid_retrieve(
-        question,
-        top_k_dense=5,
-        top_k_sparse=5,
-        merged_k=8
-    )
-
-   
-    reranked = rerank_with_cross_encoder(question, hybrid_results, top_k=5)
+async def process_file(file: UploadFile = File(...)):
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
     
-    context_text = "\n\n".join([f"[Chunk {i}] {r['text']}" for i, r in enumerate(reranked)])
+    extracted = extract_text(file_path)
+
+   
+    chunks = process_text(extracted, filename=file.filename)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No chunks produced from document.")
+
+   
+    add_to_chroma(chunks)
+
+    return {"filename": file.filename, "chunks_stored": len(chunks), "status": "stored_in_vector_db"}
+
+
+@app.get("/ask")
+async def ask_question(question: str = Query(..., min_length=1),
+                       dense_k: int = 5,
+                       sparse_k: int = 10,
+                       merged_k: int = 7,
+                       rerank_k: int = 5):
+    """
+    Steps:
+     1) Hybrid retrieve (dense + sparse)
+     2) Rerank with cross-encoder
+     3) Build context from top reranked chunks (with citations)
+     4) Call LLM to answer using only the provided context
+    """
+    merged = hybrid_retrieve(query=question,
+                             top_k_dense=dense_k,
+                             top_k_sparse=sparse_k,
+                             alpha=0.6,
+                             beta=0.4,
+                             merged_k=merged_k)
+
+    if not merged:
+        return {"answer": "", "used_chunks": [], "confidence": 0.0, "note": "No candidates found."}
+
+    
+    reranked = rerank_with_cross_encoder(question, merged, top_k=rerank_k)
+
+    
+    top_texts = []
+    used_chunks = []
+    for item in reranked:
+        top_texts.append(f"[Source: {item['source']} | idx: {item.get('index', 'n/a')}]\n{item['text']}")
+        used_chunks.append({"source": item["source"], "index": item.get("index", None), "score": item.get("score", None)})
+
+    combined_context = "\n\n---\n\n".join(top_texts)
 
     
     prompt = f"""
-You are a teaching assistant. Answer ONLY using the information in the provided document chunks.
-If the answer is not present in the chunks, say:
+You are an expert tutor. Answer the question ONLY using the provided CONTEXT. Do NOT hallucinate.
+If the context does not contain the answer, state: "The document does not contain the answer."
 
-"I could not find the answer in the uploaded document."
+CONTEXT:
+{combined_context}
 
 QUESTION:
 {question}
 
-DOCUMENT CHUNKS:
-{context_text}
-
-ANSWER:
+Answer concisely and include short numbered citations in the form [source|index] where relevant.
 """
 
-    response = ollama.generate(
-        model="llama3",
-        prompt=prompt
-    )
-    answer_text = response["response"].strip()
+   
+    try:
+        answer = call_llm(prompt)
+    except Exception as e:
+       
+        return JSONResponse(status_code=500, content={"error": "LLM call failed", "detail": str(e), "candidates": used_chunks})
 
     
-    hallucinated = detect_hallucination(answer_text, reranked)
+    scores = [c.get("score", 0.0) for c in reranked if isinstance(c.get("score", None), (int, float))]
+    confidence = float(sum(scores) / len(scores)) if scores else 0.0
 
-    if hallucinated:
-        answer_text = (
-            "The answer is **NOT present in the uploaded document**. "
-            "So I cannot answer confidently based on provided material."
-        )
+    return {"answer": answer, "used_chunks": used_chunks, "confidence": confidence}
 
-   
-    sources = [
-        {"source": r["source"], "index": r["index"], "score": r["score"]}
-        for r in reranked
-    ]
 
-    return {
-        "answer": answer_text,
-        "sources": sources,
-        "used_chunks": [{"idx": i, "source": r["source"]} for i, r in enumerate(reranked)],
-        "confidence": reranked[0]["score"],
-        "llm_meta": {"provider": "ollama_cli"},
-    }
+@app.get("/files")
+async def list_files():
+    files = os.listdir(UPLOAD_DIR)
+    return {"files": files}
+
+@app.delete("/delete/{filename}")
+async def delete_file(filename: str):
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        return {"deleted": filename}
+    else:
+        raise HTTPException(status_code=404, detail="File not found")

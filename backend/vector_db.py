@@ -16,7 +16,7 @@ client = chromadb.PersistentClient(path="vectorstore")
 
 collection = client.get_or_create_collection(
     name="study_material",
-    metadata={"hnsw:space": "cosine"}   # ensures cosine similarity
+    metadata={"hnsw:space": "cosine"}   
 )
 
 

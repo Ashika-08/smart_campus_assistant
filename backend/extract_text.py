@@ -14,8 +14,8 @@ def is_scanned_pdf(pdf_path):
     with fitz.open(pdf_path) as doc:
         for page in doc:
             if page.get_text():
-                return False  # Found text → not scanned
-    return True  # No text anywhere → scanned PDF
+                return False  
+    return True  
 
 
 
@@ -70,17 +70,13 @@ def extract_pptx(pptx_path):
     return text.strip()
 
 
-# ---------------------------------------------------
-# Extract text from TXT files
-# ---------------------------------------------------
+
 def extract_txt(txt_path):
     with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read().strip()
 
 
-# ---------------------------------------------------
-# MASTER FUNCTION: Automatically choose extraction method
-# ---------------------------------------------------
+
 def extract_text(file_path):
     extension = file_path.lower().split(".")[-1]
 
