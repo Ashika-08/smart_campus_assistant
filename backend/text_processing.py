@@ -1,15 +1,12 @@
+# text_processing.py
 import uuid
 from nltk.tokenize import sent_tokenize
 
-def process_text(text, filename):
-    """
-    Splits extracted text into chunks + adds metadata including required 'index'.
-    """
-
+def process_text(text: str, filename: str):
     sentences = sent_tokenize(text)
     chunks = []
     current_chunk = ""
-    index = 0   
+    idx = 0
 
     for sentence in sentences:
         if len(current_chunk) + len(sentence) < 500:
@@ -19,18 +16,17 @@ def process_text(text, filename):
                 "id": str(uuid.uuid4()),
                 "text": current_chunk.strip(),
                 "source": filename,
-                "index": index           
+                "index": idx
             })
+            idx += 1
             current_chunk = sentence
-            index += 1
 
-    
     if current_chunk.strip():
         chunks.append({
             "id": str(uuid.uuid4()),
             "text": current_chunk.strip(),
             "source": filename,
-            "index": index              
+            "index": idx
         })
 
     return chunks

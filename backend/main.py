@@ -1,28 +1,58 @@
 from fastapi import FastAPI, UploadFile, File
-import os, shutil
-
-from extract_text import extract_text
-from text_processing import process_text
+from fastapi.middleware.cors import CORSMiddleware
+import os
+import shutil
 from vector_db import (
+    process_text,
     add_to_chroma,
     hybrid_retrieve,
     rerank_with_cross_encoder,
-    get_chunk_by_id
 )
-
 import ollama
+import json
 
 app = FastAPI()
 
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 UPLOAD_DIR = "uploads"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-DENSE_K = 10
-SPARSE_K = 10
-MERGED_K = 10
-RERANK_TOPK = 5
+def detect_hallucination(answer: str, context_chunks: list) -> bool:
+    """
+    Returns True if the LLM appears to add new information
+    that does NOT appear in the retrieved chunks.
+    """
+
+    
+    context_text = " ".join([c["text"].lower() for c in context_chunks])
+    ans = answer.lower()
+
+   
+    important_words = [w for w in ans.split() if len(w) > 4]
+    missing = [w for w in important_words if w not in context_text]
+
+    if len(missing) > 6:  
+        return True
+
+    
+    patterns = ["4x4", "binary tree", "linked list", "database", "sorting"]
+    for p in patterns:
+        if p in ans and p not in context_text:
+            return True
+
+   
+    if ("code" in ans or "example" in ans) and "code" not in context_text:
+        return True
+
+    return False
 
 
 
@@ -30,155 +60,87 @@ RERANK_TOPK = 5
 async def upload_file(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
 
-    text = extract_text(file_path)
-
-    return {
-        "filename": file.filename,
-        "preview": text[:300],
-        "status": "uploaded",
-    }
+    return {"filename": file.filename, "status": "uploaded"}
 
 
 
 @app.post("/process_file")
-async def process_file(file: UploadFile = File(...)):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    extracted = extract_text(file_path)
-    chunks = process_text(extracted, filename=file.filename)
-
-    add_to_chroma(chunks)
-
-    return {
-        "filename": file.filename,
-        "chunks_stored": len(chunks),
-        "status": "indexed",
-    }
-
-
-
-@app.post("/ask")
-async def ask_question(question: str):
-    # 1️⃣ HYBRID search (dense + sparse)
-    merged = hybrid_retrieve(
-        query=question,
-        top_k_dense=DENSE_K,
-        top_k_sparse=SPARSE_K,
-        alpha=0.6,
-        beta=0.4,
-        merged_k=MERGED_K
-    )
-
-    if len(merged) == 0:
-        return {"answer": "No relevant information found.", "sources": []}
-
-   
-    reranked = rerank_with_cross_encoder(
-        question,
-        merged,
-        top_k=RERANK_TOPK       
-    )
-
-   
-    final_context = "\n\n".join([f"[Chunk {i+1}] {item['text']}" for i, item in enumerate(reranked)])
-
-    prompt = f"""
-You are a helpful study assistant. Answer ONLY using the context below.
-If the answer is not in the context, say "The document does not contain this information."
-
-Context:
-{final_context}
-
-Question:
-{question}
-
-Provide a clear and short explanation.
-Also include citations like: [Chunk 1], [Chunk 2].
-"""
-
-    response = ollama.chat(
-        model="llama3:latest",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    answer = response["message"]["content"]
-
-    return {
-        "answer": answer,
-        "sources": reranked
-    }
-
-
-
-@app.post("/summarize")
-async def summarize_text(filename: str):
-    file_path = f"uploads/{filename}"
-    if not os.path.exists(file_path):
-        return {"error": "File not found"}
-
-    text = extract_text(file_path)
-
-    prompt = f"""
-Summarize the following content into clear, simple bullet points.
-
-Text:
-{text}
-"""
-
-    response = ollama.chat(
-        model="llama3:latest",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    summary = response["message"]["content"]
-    return {"summary": summary}
-
-
-
-@app.post("/quiz")
-async def generate_quiz(filename: str, num_questions: int = 5):
-    file_path = f"uploads/{filename}"
-    if not os.path.exists(file_path):
-        return {"error": "File not found"}
-
-    text = extract_text(file_path)
-
-    prompt = f"""
-Create {num_questions} quiz questions from this text.
-Make a mix of MCQ, True/False, and Short Answer.
-Give answers separately.
-
-Text:
-{text}
-"""
-
-    response = ollama.chat(
-        model="llama3:latest",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return {"quiz": response["message"]["content"]}
-
-
-
-@app.get("/files")
-async def list_files():
-    return {"files": os.listdir(UPLOAD_DIR)}
-
-
-
-@app.delete("/delete/{filename}")
-async def delete_file(filename: str):
+async def process_file(filename: str):
     file_path = os.path.join(UPLOAD_DIR, filename)
 
     if not os.path.exists(file_path):
         return {"error": "File not found"}
 
-    os.remove(file_path)
-    return {"status": "deleted", "filename": filename}
+   
+    from text_extract import extract_text
+    text = extract_text(file_path)
+
+    chunks = process_text(text, filename)
+    add_to_chroma(chunks)
+
+    return {"status": "processed", "chunks": len(chunks)}
+
+
+@app.post("/ask")
+async def ask_question(question: str):
+    # --- STEP 1: Hybrid retrieve ---
+    hybrid_results = hybrid_retrieve(
+        question,
+        top_k_dense=5,
+        top_k_sparse=5,
+        merged_k=8
+    )
+
+   
+    reranked = rerank_with_cross_encoder(question, hybrid_results, top_k=5)
+
+    
+    context_text = "\n\n".join([f"[Chunk {i}] {r['text']}" for i, r in enumerate(reranked)])
+
+    
+    prompt = f"""
+You are a teaching assistant. Answer ONLY using the information in the provided document chunks.
+If the answer is not present in the chunks, say:
+
+"I could not find the answer in the uploaded document."
+
+QUESTION:
+{question}
+
+DOCUMENT CHUNKS:
+{context_text}
+
+ANSWER:
+"""
+
+    response = ollama.generate(
+        model="llama3",
+        prompt=prompt
+    )
+    answer_text = response["response"].strip()
+
+    
+    hallucinated = detect_hallucination(answer_text, reranked)
+
+    if hallucinated:
+        answer_text = (
+            "The answer is **NOT present in the uploaded document**. "
+            "So I cannot answer confidently based on provided material."
+        )
+
+   
+    sources = [
+        {"source": r["source"], "index": r["index"], "score": r["score"]}
+        for r in reranked
+    ]
+
+    return {
+        "answer": answer_text,
+        "sources": sources,
+        "used_chunks": [{"idx": i, "source": r["source"]} for i, r in enumerate(reranked)],
+        "confidence": reranked[0]["score"],
+        "llm_meta": {"provider": "ollama_cli"},
+    }
