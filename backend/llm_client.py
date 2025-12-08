@@ -1,52 +1,107 @@
 # llm_client.py
 import os
-import json
 import subprocess
-import requests
 
-def _call_ollama(prompt: str, model_name: str = "llama3:latest"):
-    
+# ---------------------------------------------
+# OLLAMA – PRIMARY CALL
+# ---------------------------------------------
+def call_ollama(prompt: str, model: str = "llama3"):
+    """
+    Calls Ollama using Python API if available, otherwise uses CLI fallback.
+    Returns { "answer": str, "meta": {...} }
+    """
+
+    # Try Python API first
     try:
         import ollama
-        resp = ollama.chat(model=model_name, messages=[{"role":"user","content":prompt}])
-        
-        content = resp.get("message", {}).get("content", "")
-        return {"answer": content, "meta": {"provider":"ollama", "raw": resp}}
-    except Exception:
-        
+        response = ollama.generate(
+            model=model,
+            prompt=prompt
+        )
+        answer = response.get("response", "").strip()
+        return {
+            "answer": answer,
+            "meta": {"provider": "ollama", "raw": response}
+        }
+    except Exception as e1:
+        # Fallback to CLI
         try:
-            p = subprocess.run(["ollama", "chat", model_name, "-m", prompt], capture_output=True, text=True, timeout=60)
-            out = p.stdout.strip()
-            return {"answer": out, "meta": {"provider":"ollama_cli"}}
-        except Exception as e:
-            raise RuntimeError(f"Ollama call failed: {e}")
+            process = subprocess.run(
+                ["ollama", "run", model],
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=120
+            )
+            answer = process.stdout.strip()
+            return {
+                "answer": answer,
+                "meta": {"provider": "ollama_cli", "returncode": process.returncode}
+            }
+        except Exception as e2:
+            raise RuntimeError(f"Ollama failed: {e1}\nCLI failed: {e2}")
 
 
-def _call_openai(prompt: str, model_name: str = "gpt-4o-mini"):
+# ---------------------------------------------
+# OPENAI – FALLBACK CALL
+# ---------------------------------------------
+def call_openai(prompt: str, model: str = "gpt-4o-mini"):
+    """
+    Calls OpenAI API only if OPENAI_API_KEY exists.
+    """
     try:
         from openai import OpenAI
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
         resp = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role":"system","content":"You answer only from context."},{"role":"user","content":prompt}],
+            model=model,
+            messages=[
+                {"role": "system", "content": "Answer ONLY using the given context."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0
         )
-        content = resp.choices[0].message["content"]
-        return {"answer": content, "meta": {"provider":"openai", "raw": resp}}
+
+        answer = resp.choices[0].message.content
+        return {
+            "answer": answer,
+            "meta": {"provider": "openai", "raw": resp}
+        }
+
     except Exception as e:
         raise RuntimeError(f"OpenAI call failed: {e}")
 
-def call_llm(prompt: str, model_name: str = None):
-    
-    model = model_name or os.getenv("LLM_MODEL", "llama3:latest")
-    
+
+# ---------------------------------------------
+# MAIN UNIFIED ENTRYPOINT
+# ---------------------------------------------
+def call_llm(prompt: str, model: str = None):
+    """
+    Central LLM calling function.
+    Tries Ollama → then OpenAI (if key exists) → else throws error.
+    """
+
+    model = model or os.getenv("LLM_MODEL", "llama3")
+
+    # 1. Try Ollama
     try:
-        return _call_ollama(prompt, model_name=model)
-    except Exception as e1:
-        
+        return call_ollama(prompt, model=model)
+    except Exception as ollama_error:
+        print("Ollama failed →", ollama_error)
+
+        # 2. Try OpenAI only if key available
         if os.getenv("OPENAI_API_KEY"):
             try:
-                return _call_openai(prompt, model_name=model)
-            except Exception as e2:
-                raise RuntimeError(f"Ollama failed: {e1}; OpenAI failed: {e2}")
-        else:
-            raise RuntimeError(f"Ollama failed and no OPENAI_API_KEY configured. Ollama error: {e1}")
+                return call_openai(prompt, model=model)
+            except Exception as openai_error:
+                raise RuntimeError(
+                    f"Ollama failed and OpenAI also failed.\n\n"
+                    f"Ollama error:\n{ollama_error}\n\n"
+                    f"OpenAI error:\n{openai_error}"
+                )
+
+        # 3. No fallback
+        raise RuntimeError(
+            f"Ollama failed AND no OpenAI API key configured.\n\n"
+            f"Ollama error:\n{ollama_error}"
+        )
