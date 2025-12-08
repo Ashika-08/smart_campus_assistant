@@ -1,66 +1,62 @@
+# vector_db.py (patched version)
+
 import chromadb
 from chromadb.config import Settings
+
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
-from nltk.tokenize import sent_tokenize
+
 import uuid
 
+# -------------------------------------------
+# 1) Load Models
+# -------------------------------------------
+encoder = SentenceTransformer("all-MiniLM-L6-v2")
+cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-
-encoder = SentenceTransformer("all-MiniLM-L6-v2")  
-cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")  
-
-
-
+# -------------------------------------------
+# 2) Persistent Chroma Client
+# -------------------------------------------
 client = chromadb.PersistentClient(path="vectorstore")
 
 collection = client.get_or_create_collection(
     name="study_material",
-    metadata={"hnsw:space": "cosine"}   
+    metadata={"hnsw:space": "cosine"}  # cosine distance
 )
 
+# -------------------------------------------
+# 3) BM25 Globals (Incremental!)
+# -------------------------------------------
+bm25_model = None
+bm25_texts = []
+bm25_metas = []
+bm25_tokenized = []
 
+def _rebuild_bm25_index():
+    """
+    Rebuild BM25 index when needed.
+    Called only when new docs are added (not on every query).
+    """
+    global bm25_model
+    if not bm25_texts:
+        bm25_model = None
+        return
+    bm25_model = BM25Okapi(bm25_tokenized)
 
-def process_text(text, filename):
-    sentences = sent_tokenize(text)
-    chunks = []
-    current_chunk = ""
-    chunk_index = 0
-
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) < 500:
-            current_chunk += " " + sentence
-        else:
-            chunks.append({
-                "id": str(uuid.uuid4()),
-                "text": current_chunk.strip(),
-                "source": filename,
-                "index": chunk_index
-            })
-            chunk_index += 1
-            current_chunk = sentence
-
-    if current_chunk.strip():
-        chunks.append({
-            "id": str(uuid.uuid4()),
-            "text": current_chunk.strip(),
-            "source": filename,
-            "index": chunk_index
-        })
-
-    return chunks
-
-
-
+# -------------------------------------------
+# 4) Add Chunks (vector + sparse storage)
+# -------------------------------------------
 def add_to_chroma(chunks):
-    global bm25_model, bm25_texts, bm25_metas
+    global bm25_texts, bm25_metas, bm25_tokenized, bm25_model
 
     ids = [c["id"] for c in chunks]
     docs = [c["text"] for c in chunks]
-    metas = [{"source": c["source"], "index": c["index"]} for c in chunks]
+    metas = [{"source": c["source"], "index": c["index"], "id": c["id"]} for c in chunks]
 
+    # Embeddings
     embeddings = encoder.encode(docs).tolist()
 
+    # Add to Chroma
     collection.add(
         ids=ids,
         documents=docs,
@@ -68,27 +64,23 @@ def add_to_chroma(chunks):
         embeddings=embeddings
     )
 
-    
-    bm25_model = None
-    bm25_texts = None
-    bm25_metas = None
+    # Incrementally update BM25
+    for text, meta in zip(docs, metas):
+        tokens = text.split()
+        bm25_texts.append(text)
+        bm25_metas.append(meta)
+        bm25_tokenized.append(tokens)
+
+    # Rebuild once
+    _rebuild_bm25_index()
 
 
-
-def get_chunk_by_id(chunk_id):
-    res = collection.get(ids=[chunk_id], include=["documents", "metadatas"])
-    if len(res["documents"]) == 0:
-        return None
-    return {
-        "text": res["documents"][0],
-        "source": res["metadatas"][0]["source"],
-        "index": res["metadatas"][0]["index"],
-    }
-
-
-
+# -------------------------------------------
+# 5) Dense Retriever
+# -------------------------------------------
 def query_dense(query, n=5):
     q_emb = encoder.encode([query]).tolist()
+
     res = collection.query(
         query_embeddings=q_emb,
         n_results=n,
@@ -96,11 +88,15 @@ def query_dense(query, n=5):
     )
 
     dense_results = []
-    for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
-
-        sim = 1 / (1 + dist) 
+    for doc, meta, dist in zip(
+        res["documents"][0], 
+        res["metadatas"][0], 
+        res["distances"][0]
+    ):
+        sim = 1 - dist  # FIXED cosine similarity
 
         dense_results.append({
+            "id": meta["id"],
             "text": doc,
             "source": meta["source"],
             "index": meta["index"],
@@ -110,30 +106,22 @@ def query_dense(query, n=5):
     return dense_results
 
 
-
-def build_bm25_index():
-    all_docs = collection.get(include=["documents", "metadatas"])
-    texts = all_docs["documents"]
-    tokenized = [t.split() for t in texts]
-    return BM25Okapi(tokenized), texts, all_docs["metadatas"]
-
-bm25_model = None
-bm25_texts = None
-bm25_metas = None
-
-def ensure_bm25_index():
-    global bm25_model, bm25_texts, bm25_metas
-    if bm25_model is None:
-        bm25_model, bm25_texts, bm25_metas = build_bm25_index()
-
+# -------------------------------------------
+# 6) Sparse Retriever (BM25)
+# -------------------------------------------
 def query_sparse(query, n=5):
-    ensure_bm25_index()
+    global bm25_model
+
+    if bm25_model is None or not bm25_texts:
+        return []
+
     scores = bm25_model.get_scores(query.split())
     top_idx = scores.argsort()[-n:][::-1]
 
     sparse_results = []
     for idx in top_idx:
         sparse_results.append({
+            "id": bm25_metas[idx]["id"],
             "text": bm25_texts[idx],
             "source": bm25_metas[idx]["source"],
             "index": bm25_metas[idx]["index"],
@@ -143,41 +131,51 @@ def query_sparse(query, n=5):
     return sparse_results
 
 
-
-def hybrid_retrieve(query, top_k_dense=5, top_k_sparse=5, alpha=0.6, beta=0.4, merged_k=5):
+# -------------------------------------------
+# 7) Hybrid
+# -------------------------------------------
+def hybrid_retrieve(query, top_k_dense=5, top_k_sparse=5, alpha=0.6, beta=0.4, merged_k=6):
     dense = query_dense(query, top_k_dense)
     sparse = query_sparse(query, top_k_sparse)
 
     combined = {}
 
+    # Combine dense
     for r in dense:
-        key = f"{r['source']}:{r['index']}"
-        combined[key] = {"text": r["text"], "source": r["source"], "index": r["index"], "score": alpha * r["score"]}
+        combined[r["id"]] = {
+            **r,
+            "score": alpha * r["score"]
+        }
 
+    # Combine sparse
     for r in sparse:
-        key = f"{r['source']}:{r['index']}"
-        if key not in combined:
-            combined[key] = {"text": r["text"], "source": r["source"], "index": r["index"], "score": beta * r["score"]}
+        if r["id"] not in combined:
+            combined[r["id"]] = {
+                **r,
+                "score": beta * r["score"]
+            }
         else:
-            combined[key]["score"] += beta * r["score"]
+            combined[r["id"]]["score"] += beta * r["score"]
 
+    # Sort
     merged = list(combined.values())
     merged.sort(key=lambda x: x["score"], reverse=True)
 
     return merged[:merged_k]
 
 
-
+# -------------------------------------------
+# 8) Cross-Encoder Reranker
+# -------------------------------------------
 def rerank_with_cross_encoder(query, results, top_k=3):
-    k=top_k
     pairs = [(query, r["text"]) for r in results]
     scores = cross_encoder.predict(pairs)
 
     reranked = []
-    for r, s in zip(results, scores):
-        nr = r.copy()
-        nr["score"] = float(s)
-        reranked.append(nr)
+    for r, score in zip(results, scores):
+        new_r = r.copy()
+        new_r["score"] = float(score)
+        reranked.append(new_r)
 
     reranked.sort(key=lambda x: x["score"], reverse=True)
-    return reranked[:k]
+    return reranked[:top_k]

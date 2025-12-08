@@ -1,101 +1,91 @@
-import fitz  # PyMuPDF
+import os
+import fitz  # PyMuPDF for PDF extraction
 from pptx import Presentation
 from docx import Document
-from pdf2image import convert_from_path
-import easyocr
-import os
+import pytesseract
+from PIL import Image
 
+# -------------------------------
+# Extract text from PDF
+# -------------------------------
 
-ocr_reader = easyocr.Reader(['en'], gpu=False)
-
-
-
-def is_scanned_pdf(pdf_path):
-    with fitz.open(pdf_path) as doc:
-        for page in doc:
-            if page.get_text():
-                return False  
-    return True  
-
-
-
-def extract_pdf_text(pdf_path):
+def extract_pdf(path):
     text = ""
-    with fitz.open(pdf_path) as doc:
-        for page in doc:
-            text += page.get_text()
-    return text.strip()
+    doc = fitz.open(path)
+    for page in doc:
+        text += page.get_text()
+    return text
 
 
+# -------------------------------
+# Extract text from PPTX
+# -------------------------------
 
-def extract_scanned_pdf(pdf_path):
-    images = convert_from_path(pdf_path)
-    all_text = ""
-
-    for i, img in enumerate(images):
-        img_path = f"temp_page_{i}.png"
-        img.save(img_path)
-
-        ocr_output = ocr_reader.readtext(img_path, detail=0)
-        all_text += "\n".join(ocr_output) + "\n"
-
-        os.remove(img_path)
-
-    return all_text.strip()
-
-
-
-def extract_image(image_path):
-    result = ocr_reader.readtext(image_path, detail=0)
-    return "\n".join(result).strip()
-
-
-
-def extract_docx(docx_path):
-    doc = Document(docx_path)
-    text = "\n".join([p.text for p in doc.paragraphs])
-    return text.strip()
-
-
-
-def extract_pptx(pptx_path):
-    prs = Presentation(pptx_path)
+def extract_pptx(path):
     text = ""
-
+    prs = Presentation(path)
     for slide in prs.slides:
         for shape in slide.shapes:
             if hasattr(shape, "text"):
                 text += shape.text + "\n"
-
-    return text.strip()
-
+    return text
 
 
-def extract_txt(txt_path):
-    with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read().strip()
+# -------------------------------
+# Extract text from DOCX
+# -------------------------------
+
+def extract_docx(path):
+    text = ""
+    doc = Document(path)
+    for p in doc.paragraphs:
+        text += p.text + "\n"
+    return text
 
 
+# -------------------------------
+# Extract text from Images → OCR
+# -------------------------------
 
-def extract_text(file_path):
-    extension = file_path.lower().split(".")[-1]
+def extract_image(path):
+    try:
+        image = Image.open(path)
+        text = pytesseract.image_to_string(image)
+        return text
+    except:
+        return ""
 
-    if extension == "pdf":
-        if is_scanned_pdf(file_path):
-            return extract_scanned_pdf(file_path)
-        return extract_pdf_text(file_path)
 
-    elif extension == "docx":
-        return extract_docx(file_path)
+# -------------------------------
+# AUTO-DETECT FILE TYPE
+# -------------------------------
 
-    elif extension == "pptx":
-        return extract_pptx(file_path)
+def extract_text_from_file(path):
+    """
+    Automatically detect the file type and extract text.
+    """
 
-    elif extension in ["png", "jpg", "jpeg"]:
-        return extract_image(file_path)
+    if not os.path.exists(path):
+        return ""
 
-    elif extension == "txt":
-        return extract_txt(file_path)
+    ext = path.lower()
+
+    if ext.endswith(".pdf"):
+        return extract_pdf(path)
+
+    elif ext.endswith(".pptx"):
+        return extract_pptx(path)
+
+    elif ext.endswith(".docx"):
+        return extract_docx(path)
+
+    elif ext.endswith((".png", ".jpg", ".jpeg", ".bmp", ".tiff")):
+        return extract_image(path)
 
     else:
-        return "Unsupported file format"
+        # Fallback: Read as plain text
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except:
+            return ""
