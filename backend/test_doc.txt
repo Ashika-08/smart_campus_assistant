@@ -1,0 +1,1 @@
+The Smart Campus Assistant is an AI-powered system designed to help students. It uses RAG and Knowledge Graphs.
