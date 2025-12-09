@@ -1,4 +1,4 @@
-import fitz  # PyMuPDF
+import fitz  
 from pptx import Presentation
 from docx import Document
 from pdf2image import convert_from_path

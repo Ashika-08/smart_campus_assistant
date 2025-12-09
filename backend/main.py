@@ -1,12 +1,24 @@
 # main.py
 import json
+import re
+
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
 from typing import List, Dict, Any
+from kg_builder import (
+    build_and_save_kg,
+    get_kg,
+    hybrid_retrieve_with_graph
+)
 
+from vector_db import collection  
 from extract_text import extract_text
+
+
+
+
 from vector_db import (
     process_text,
     add_to_chroma,
@@ -17,9 +29,7 @@ from llm_client import call_llm
 
 app = FastAPI()
 
-# -----------------------
-# CORS
-# -----------------------
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,9 +41,7 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-# -----------------------
-# Hallucination detector (keeps simple)
-# -----------------------
+
 def detect_hallucination(answer: str, chunks: List[Dict[str, Any]]) -> bool:
     context_text = " ".join([c["text"].lower() for c in chunks])
     ans = answer.lower()
@@ -46,9 +54,7 @@ def detect_hallucination(answer: str, chunks: List[Dict[str, Any]]) -> bool:
     return False
 
 
-# -----------------------
-# Basic endpoints: upload / process_file / ask
-# -----------------------
+
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
@@ -117,7 +123,7 @@ async def summarize_file(filename: str, mode: str = "short", max_chunks: int = 3
 
     top_chunks = file_chunks[:min(len(file_chunks), max_chunks)]
 
-    # ---------------- MAP STEP ----------------
+    
     chunk_summaries = []
     for i in range(0, len(top_chunks), batch_size):
         batch = top_chunks[i:i+batch_size]
@@ -136,7 +142,7 @@ Return ONLY the summary.
         map_out = call_llm(map_prompt, model="llama3")
         chunk_summaries.append(map_out["answer"].strip())
 
-    # ---------------- REDUCE STEP ----------------
+    
     combined = "\n\n".join(chunk_summaries)
 
     reduce_prompt = f"""
@@ -152,7 +158,7 @@ Return ONLY the final summary.
     final_out = call_llm(reduce_prompt, model="llama3")
     final_summary = final_out["answer"].strip()
 
-    # NOTE: Hallucination check disabled for summarization.
+    
     return {
         "summary": final_summary,
         "num_chunks_used": len(top_chunks),
@@ -178,7 +184,7 @@ async def generate_quiz(
 
     import json, re
 
-    # ---------------- 1) RETRIEVE CHUNKS ----------------
+    
     results = hybrid_retrieve(filename, top_k_dense=50, top_k_sparse=50, merged_k=100)
     file_chunks = [r for r in results if r["source"] == filename]
 
@@ -188,7 +194,7 @@ async def generate_quiz(
     top_chunks = file_chunks[:min(max_chunks, len(file_chunks))]
     context_text = "\n\n".join([f"[Chunk {c['index']}] {c['text']}" for c in top_chunks])
 
-    # ---------------- 2) QUIZ PROMPT ----------------
+    
     quiz_prompt = f"""
 You are an expert educational content creator.
 Generate EXACTLY {num_questions} quiz questions using ONLY the content below.
@@ -223,19 +229,19 @@ RULES:
 5. DO NOT add any text outside JSON.
 """
 
-    # ---------------- 3) CALL LLM ----------------
+    
     llm_out = call_llm(quiz_prompt, model="llama3")
     raw_output = llm_out.get("answer", "")
 
     parsed = None
 
-    # ---------------- 4) TRY DIRECT JSON PARSE ----------------
+    
     try:
         parsed = json.loads(raw_output)
     except:
         parsed = None
 
-    # ---------------- 5) TRY SLICE JSON ----------------
+    
     if parsed is None:
         try:
             start = raw_output.find("[")
@@ -245,7 +251,7 @@ RULES:
         except:
             parsed = None
 
-    # ---------------- 6) ASK LLM TO FIX JSON ----------------
+    
     if parsed is None:
         try:
             fix_prompt = f"""
@@ -265,7 +271,7 @@ OUTPUT:
                 "meta": llm_out.get("meta", {})
             }
 
-    # ---------------- 7) GROUNDING CHECK ----------------
+    
     context_lower = " ".join([c["text"].lower() for c in top_chunks])
     final_questions = []
 
@@ -280,7 +286,7 @@ OUTPUT:
         if not question:
             continue
 
-        # Convert answer to lowercase string always
+       
         answer_str = str(answer).strip().lower()
         if not answer_str:
             continue
@@ -288,16 +294,16 @@ OUTPUT:
         tokens = re.findall(r"[a-zA-Z0-9]{4,}", answer_str)
         grounded = any(t in context_lower for t in tokens)
 
-        # MCQ + blank → must be grounded
+        
         if qtype in ("mcq", "blank") and not grounded:
             continue
 
-        # True/False → normalize and validate
+        
         if qtype == "tf":
             if answer_str not in ("true", "false"):
                 continue
 
-        # Ensure proper source structure
+        
         if "source" not in q or not isinstance(q["source"], dict):
             q["source"] = {
                 "file": filename,
@@ -309,11 +315,11 @@ OUTPUT:
         if len(final_questions) >= num_questions:
             break
 
-    # ---------------- 8) NORMALIZE ANSWERS FOR FRONTEND ----------------
+    
     for q in final_questions:
         q["answer"] = str(q.get("answer", ""))  # Convert bool → string
 
-    # ---------------- 9) RETURN ----------------
+    
     return {
         "quiz": final_questions,
         "requested": num_questions,
@@ -321,3 +327,163 @@ OUTPUT:
         "used_chunks": [c["index"] for c in top_chunks],
         "llm_meta": llm_out.get("meta", {})
     }
+ 
+@app.post("/build_kg")
+
+async def build_kg_for_file(filename: str):
+    """
+    Build the Knowledge Graph from all chunks that belong to filename.
+    """
+
+    
+    from vector_db import collection
+    all_docs = collection.get(include=["documents", "metadatas"])
+
+    chunks = []
+    for doc, meta in zip(all_docs["documents"], all_docs["metadatas"]):
+        if meta.get("source") == filename:
+            chunks.append({
+                "text": doc,
+                "source": meta.get("source"),
+                "index": meta.get("index")
+            })
+
+    if not chunks:
+        return {"error": "No chunks found for file. Run /process_file first."}
+
+   
+    kg_dict = build_and_save_kg(chunks, source_name=filename)
+
+    
+    kg = get_kg()
+
+    return {
+        "status": "built",
+        "num_nodes": kg.g.number_of_nodes(),
+        "num_edges": kg.g.number_of_edges(),
+        "graph": kg_dict
+    }
+
+@app.get("/kg_query")
+async def kg_query(entity: str, hops: int = 1):
+    """
+    Query the knowledge graph starting from given entity (fuzzy match).
+    """
+    from kg_builder import _KG
+
+    nx_graph = _KG.g
+
+    
+    candidate = None
+    if entity in nx_graph:
+        candidate = entity
+    else:
+       
+        norm = entity.replace("\n", " ").strip()
+        norm = re.sub(r"\s+", " ", norm).strip(" :;,.–—-")
+        if norm in nx_graph:
+            candidate = norm
+
+    
+    if candidate is None:
+        candidate = find_closest_entity(entity, nx_graph)
+
+    if candidate is None:
+        return {"error": f"No similar entity found for '{entity}'."}
+
+    
+    nodes = {candidate}
+    edges = []
+    frontier = {candidate}
+    visited = {candidate}
+
+    for _ in range(hops):
+        next_frontier = set()
+        for node in frontier:
+            for neighbor in nx_graph.neighbors(node):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    next_frontier.add(neighbor)
+                    nodes.add(neighbor)
+                    edges.append({
+                        "source": node,
+                        "target": neighbor,
+                        "relation": nx_graph.edges[node, neighbor].get("relation", "related")
+                    })
+        frontier = next_frontier
+
+    
+    output_nodes = []
+    for n in nodes:
+        data = nx_graph.nodes[n]
+        output_nodes.append({
+            "id": n,
+            "label": data.get("label", "entity"),
+            "extra": {k: v for k, v in data.items() if k not in {"label"}}
+        })
+
+    return {
+        "query": entity,
+        "matched_entity": candidate,
+        "hops": hops,
+        "nodes": output_nodes,
+        "edges": edges
+    }
+
+
+@app.get("/hybrid_graph_retrieve")
+async def hybrid_graph_retrieve(
+    query: str,
+    top_k_vector: int = 5,
+    top_k_graph: int = 5,
+    hops: int = 1,
+    alpha: float = 0.6
+):
+    result = hybrid_retrieve_with_graph(
+    query=query,
+    top_k_vector=top_k_vector,
+    top_k_graph=top_k_graph,
+    hops=hops,         
+    alpha=alpha
+)
+
+    return result
+
+
+def find_closest_entity(query: str, graph):
+    import re
+
+    q = query.lower().strip()
+    q = re.sub(r"\s+", " ", q)
+
+    best = None
+    best_score = 0
+
+    for node in graph.nodes:
+        node_clean = str(node).lower().strip()
+        node_clean = re.sub(r"\s+", " ", node_clean)
+
+        score = 0
+
+       
+        if q == node_clean:
+            score += 20
+
+        
+        if q in node_clean:
+            score += 10
+        if node_clean in q:
+            score += 8
+
+        
+        q_tokens = set(q.split())
+        n_tokens = set(node_clean.split())
+        overlap = q_tokens & n_tokens
+        score += len(overlap) * 2
+
+        if score > best_score:
+            best_score = score
+            best = node
+
+    
+    return best if best_score >= 3 else None

@@ -1,3 +1,5 @@
+# vector_db.py
+
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -6,17 +8,15 @@ from nltk.tokenize import sent_tokenize
 import uuid
 
 
-
-encoder = SentenceTransformer("all-MiniLM-L6-v2")  
-cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")  
-
+encoder = SentenceTransformer("all-MiniLM-L6-v2")
+cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
 client = chromadb.PersistentClient(path="vectorstore")
 
 collection = client.get_or_create_collection(
     name="study_material",
-    metadata={"hnsw:space": "cosine"}   
+    metadata={"hnsw:space": "cosine"}
 )
 
 
@@ -68,7 +68,6 @@ def add_to_chroma(chunks):
         embeddings=embeddings
     )
 
-    
     bm25_model = None
     bm25_texts = None
     bm25_metas = None
@@ -77,7 +76,7 @@ def add_to_chroma(chunks):
 
 def get_chunk_by_id(chunk_id):
     res = collection.get(ids=[chunk_id], include=["documents", "metadatas"])
-    if len(res["documents"]) == 0:
+    if not res["documents"]:
         return None
     return {
         "text": res["documents"][0],
@@ -97,9 +96,7 @@ def query_dense(query, n=5):
 
     dense_results = []
     for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
-
-        sim = 1 / (1 + dist) 
-
+        sim = 1 / (1 + dist)  # convert distance → similarity
         dense_results.append({
             "text": doc,
             "source": meta["source"],
@@ -117,14 +114,17 @@ def build_bm25_index():
     tokenized = [t.split() for t in texts]
     return BM25Okapi(tokenized), texts, all_docs["metadatas"]
 
+
 bm25_model = None
 bm25_texts = None
 bm25_metas = None
+
 
 def ensure_bm25_index():
     global bm25_model, bm25_texts, bm25_metas
     if bm25_model is None:
         bm25_model, bm25_texts, bm25_metas = build_bm25_index()
+
 
 def query_sparse(query, n=5):
     ensure_bm25_index()
@@ -152,12 +152,22 @@ def hybrid_retrieve(query, top_k_dense=5, top_k_sparse=5, alpha=0.6, beta=0.4, m
 
     for r in dense:
         key = f"{r['source']}:{r['index']}"
-        combined[key] = {"text": r["text"], "source": r["source"], "index": r["index"], "score": alpha * r["score"]}
+        combined[key] = {
+            "text": r["text"],
+            "source": r["source"],
+            "index": r["index"],
+            "score": alpha * r["score"],
+        }
 
     for r in sparse:
         key = f"{r['source']}:{r['index']}"
         if key not in combined:
-            combined[key] = {"text": r["text"], "source": r["source"], "index": r["index"], "score": beta * r["score"]}
+            combined[key] = {
+                "text": r["text"],
+                "source": r["source"],
+                "index": r["index"],
+                "score": beta * r["score"],
+            }
         else:
             combined[key]["score"] += beta * r["score"]
 
@@ -169,7 +179,6 @@ def hybrid_retrieve(query, top_k_dense=5, top_k_sparse=5, alpha=0.6, beta=0.4, m
 
 
 def rerank_with_cross_encoder(query, results, top_k=3):
-    k=top_k
     pairs = [(query, r["text"]) for r in results]
     scores = cross_encoder.predict(pairs)
 
@@ -180,4 +189,23 @@ def rerank_with_cross_encoder(query, results, top_k=3):
         reranked.append(nr)
 
     reranked.sort(key=lambda x: x["score"], reverse=True)
-    return reranked[:k]
+    return reranked[:top_k]
+
+
+# -----------------------------
+# REQUIRED BY KNOWLEDGE GRAPH MODULE
+# → Simple wrapper for hybrid vector search
+# -----------------------------
+def query_vector_db(query: str, top_k: int = 5):
+    """
+    Used by Knowledge Graph module for vector retrieval.
+    """
+    results = query_dense(query, n=top_k)
+    output = []
+    for r in results:
+        output.append({
+            "text": r["text"],
+            "score": r["score"],
+            "metadata": {"source": r["source"], "index": r["index"]}
+        })
+    return output

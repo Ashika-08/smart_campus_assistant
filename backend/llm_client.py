@@ -2,16 +2,14 @@
 import os
 import subprocess
 
-# ---------------------------------------------
-# OLLAMA – PRIMARY CALL
-# ---------------------------------------------
+
 def call_ollama(prompt: str, model: str = "llama3"):
     """
     Calls Ollama using Python API if available, otherwise uses CLI fallback.
     Returns { "answer": str, "meta": {...} }
     """
 
-    # Try Python API first
+    
     try:
         import ollama
         response = ollama.generate(
@@ -24,7 +22,7 @@ def call_ollama(prompt: str, model: str = "llama3"):
             "meta": {"provider": "ollama", "raw": response}
         }
     except Exception as e1:
-        # Fallback to CLI
+       
         try:
             process = subprocess.run(
                 ["ollama", "run", model],
@@ -42,9 +40,7 @@ def call_ollama(prompt: str, model: str = "llama3"):
             raise RuntimeError(f"Ollama failed: {e1}\nCLI failed: {e2}")
 
 
-# ---------------------------------------------
-# OPENAI – FALLBACK CALL
-# ---------------------------------------------
+
 def call_openai(prompt: str, model: str = "gpt-4o-mini"):
     """
     Calls OpenAI API only if OPENAI_API_KEY exists.
@@ -72,9 +68,6 @@ def call_openai(prompt: str, model: str = "gpt-4o-mini"):
         raise RuntimeError(f"OpenAI call failed: {e}")
 
 
-# ---------------------------------------------
-# MAIN UNIFIED ENTRYPOINT
-# ---------------------------------------------
 def call_llm(prompt: str, model: str = None):
     """
     Central LLM calling function.
@@ -83,13 +76,13 @@ def call_llm(prompt: str, model: str = None):
 
     model = model or os.getenv("LLM_MODEL", "llama3")
 
-    # 1. Try Ollama
+    
     try:
         return call_ollama(prompt, model=model)
     except Exception as ollama_error:
         print("Ollama failed →", ollama_error)
 
-        # 2. Try OpenAI only if key available
+        
         if os.getenv("OPENAI_API_KEY"):
             try:
                 return call_openai(prompt, model=model)
@@ -100,7 +93,7 @@ def call_llm(prompt: str, model: str = None):
                     f"OpenAI error:\n{openai_error}"
                 )
 
-        # 3. No fallback
+        
         raise RuntimeError(
             f"Ollama failed AND no OpenAI API key configured.\n\n"
             f"Ollama error:\n{ollama_error}"
