@@ -34,8 +34,62 @@ def expand_graph(entity_name: str, hops: int = 1):
     from kg_builder import expand_graph as kg_expand
     return kg_expand(entity_name, hops)
 
+import wikipedia
+
+def search_wikipedia(query, top_k=2):
+    # NLP Disambiguation
+    search_queries = [query]
+    if "nlp" in query.lower():
+        search_queries.append("Natural Language Processing")
+        search_queries.append("Natural Language Processing AI")
+        
+    try:
+        results = []
+        for q in search_queries:
+             results.extend(wikipedia.search(q, results=top_k))
+        
+        # Deduplicate results
+        results = list(set(results))
+        
+        if not results:
+            return []
+        
+        wiki_hits = []
+        for title in results:
+            try:
+                # Filter out irrelevant "NLP" (Psychology)
+                if "Neuro-linguistic programming" in title and "ai" not in query.lower():
+                   continue 
+
+                page = wikipedia.page(title, auto_suggest=False)
+                summary = page.summary[:1000] # Limit summary length
+                wiki_hits.append({
+                    "text": f"Wikipedia ({title}): {summary}", 
+                    "source": "Wikipedia", 
+                    "index": "web", 
+                    "score": 0.9 # High score for relevance if found
+                })
+            except:
+                continue
+        return wiki_hits
+    except:
+        return []
+
 def hybrid_retrieve_with_graph(query: str, top_k_vector=5, top_k_graph=5, hops=1, alpha=0.6):
     vector_hits = hybrid_retrieve(query, merged_k=top_k_vector)
+    
+    # Check max score
+    max_score = 0
+    if vector_hits:
+        max_score = vector_hits[0].get("score", 0)
+        
+    # If confidence is low, try Wikipedia
+    if max_score < 0.60:
+        wiki_hits = search_wikipedia(query)
+        # Append unique wiki hits
+        for w in wiki_hits:
+            vector_hits.append(w)
+    
     matched_entity = find_similar_entity_in_kg(query, vector_hits)
     if matched_entity is None:
         return {"query": query, "matched_entity": None, "vector": vector_hits, "graph_expansion": []}

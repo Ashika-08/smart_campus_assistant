@@ -6,9 +6,21 @@ from retrieval import hybrid_retrieve_with_graph, hybrid_retrieve
 from answer_generator import generate_answer
 from quiz_generator import generate_quiz
 from summary_generator import generate_summary
+from flashcard_generator import generate_flashcards
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@app.get("/flashcards")
+def flashcards_endpoint(filename: str, num_cards: int = 5):
+    all_docs = collection.get(include=["documents", "metadatas"])
+    texts = [doc for doc, meta in zip(all_docs["documents"], all_docs["metadatas"]) if meta.get("source") == filename]
+    if not texts:
+        raise HTTPException(status_code=404, detail="File not found")
+    cards = generate_flashcards("\n".join(texts), num_cards)
+    return {"filename": filename, "flashcards": cards}
+
+
 
 @app.post("/upload")
 def upload_file(file: UploadFile = File(...)):
