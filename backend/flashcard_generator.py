@@ -24,7 +24,7 @@ def generate_flashcards(text, num_cards=5):
         response = call_llm(prompt)
         raw_answer = response["answer"]
         
-        # Robust JSON parsing (copied from quiz_generator)
+        
         start_idx = raw_answer.find("[")
         end_idx = raw_answer.rfind("]")
         

@@ -81,20 +81,26 @@ def call_llm(prompt: str, model: str = None):
         return call_ollama(prompt, model=model)
     except Exception as ollama_error:
         print("Ollama failed →", ollama_error)
+        raise RuntimeError(f"Ollama failed ensure the model '{model}' is installed.\nError: {ollama_error}")
 
+def call_vision(prompt: str, image_path: str, model: str = "moondream"):
+    """
+    Calls a Vision LLM (default: moondream via Ollama) to describe an image.
+    """
+    # 1. Try Ollama
+    try:
+        import ollama
         
-        if os.getenv("OPENAI_API_KEY"):
-            try:
-                return call_openai(prompt, model=model)
-            except Exception as openai_error:
-                raise RuntimeError(
-                    f"Ollama failed and OpenAI also failed.\n\n"
-                    f"Ollama error:\n{ollama_error}\n\n"
-                    f"OpenAI error:\n{openai_error}"
-                )
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
 
-        
-        raise RuntimeError(
-            f"Ollama failed AND no OpenAI API key configured.\n\n"
-            f"Ollama error:\n{ollama_error}"
+        response = ollama.generate(
+            model=model,
+            prompt=prompt,
+            images=[image_bytes]
         )
+        return response.get("response", "").strip()
+
+    except Exception as e:
+        print(f"Ollama Vision ({model}) failed: {e}")
+        return "Image description unavailable."

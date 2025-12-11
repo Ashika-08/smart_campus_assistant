@@ -34,20 +34,38 @@ def extract_scanned_pdf(pdf_path):
 
     for i, img in enumerate(images):
         img_path = f"temp_page_{i}.png"
+        
+        
+        img.thumbnail((1024, 1024))
         img.save(img_path)
 
-        ocr_output = ocr_reader.readtext(img_path, detail=0)
-        all_text += "\n".join(ocr_output) + "\n"
+        
+        page_text = extract_image(img_path)
+        all_text += f"\n--- Page {i+1} ---\n{page_text}\n"
 
-        os.remove(img_path)
+        if os.path.exists(img_path):
+            os.remove(img_path)
 
     return all_text.strip()
 
 
 
 def extract_image(image_path):
-    result = ocr_reader.readtext(image_path, detail=0)
-    return "\n".join(result).strip()
+    
+    ocr_result = ocr_reader.readtext(image_path, detail=0)
+    ocr_text = "\n".join(ocr_result).strip()
+    
+    
+    try:
+        from llm_client import call_vision
+        print(f"DEBUG: Analyze image {image_path}")
+        vision_desc = call_vision("Describe this educational image in detail. Mention title, axes, data points, and relationships.", image_path)
+        
+        final_text = f"{ocr_text}\n\n[Visual Description]:\n{vision_desc}"
+        return final_text.strip()
+    except Exception as e:
+        print(f"Vision extraction failed: {e}")
+        return ocr_text
 
 
 
