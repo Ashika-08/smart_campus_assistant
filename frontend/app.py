@@ -106,7 +106,7 @@ elif nav == "Knowledge Graph":
 elif nav == "Study Mode":
     st.header("📝 Study Aids")
     
-    tab1, tab2, tab3 = st.tabs(["Summary", "Quiz", "Flashcards"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Quiz", "Flashcards", "Study Planner 📅"])
     
     with tab1:
         if st.button("Generate Summary"):
@@ -172,3 +172,25 @@ elif nav == "Study Mode":
                 # Use expander to simulate flip
                 with st.expander(f"Card {i+1}: {card.get('front')}"):
                     st.info(f"Answer: {card.get('back')}")
+
+    with tab4:
+        st.header("Smart Study Planner 📅")
+        days = st.slider("Plan Duration (Days)", 3, 14, 7)
+        if st.button("Generate Study Plan"):
+            if not st.session_state.uploaded_file:
+                st.error("No file uploaded.")
+            else:
+                with st.spinner("Planning your schedule..."):
+                    try:
+                        resp = requests.get(f"{API_URL}/plan", params={"filename": st.session_state.uploaded_file, "days": days}, timeout=300)
+                        if resp.status_code == 200:
+                            plan = resp.json().get("plan", [])
+                            st.success(f"Generated {len(plan)}-Day Plan!")
+                            for day in plan:
+                                with st.expander(f"Day {day['day']}: {day['topic']}", expanded=True):
+                                    for activity in day['activities']:
+                                        st.write(f"- {activity}")
+                        else:
+                            st.error("Failed to generate plan.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")

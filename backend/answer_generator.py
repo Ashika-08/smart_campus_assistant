@@ -3,12 +3,10 @@ import json
 from llm_client import call_llm
 
 def generate_answer(query, results):
-    # Prepare context from results
-    # Each result has "text", "source", "index", "score"
-    # We want to format this nicely for the LLM
+    
     
     context_parts = []
-    for i, res in enumerate(results[:5]): # Take top 5
+    for i, res in enumerate(results[:5]): 
         source = res.get("source", "unknown")
         text = res.get("text", "").strip()
         context_parts.append(f"Source {i+1} ({source}):\n{text}")

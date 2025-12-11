@@ -7,9 +7,19 @@ from answer_generator import generate_answer
 from quiz_generator import generate_quiz
 from summary_generator import generate_summary
 from flashcard_generator import generate_flashcards
+from study_planner import generate_study_plan
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@app.get("/plan")
+def plan_endpoint(filename: str, days: int = 5):
+    all_docs = collection.get(include=["documents", "metadatas"])
+    texts = [doc for doc, meta in zip(all_docs["documents"], all_docs["metadatas"]) if meta.get("source") == filename]
+    if not texts:
+        raise HTTPException(status_code=404, detail="File not found")
+    plan = generate_study_plan("\n".join(texts), days)
+    return {"filename": filename, "plan": plan}
 
 @app.get("/flashcards")
 def flashcards_endpoint(filename: str, num_cards: int = 5):
