@@ -17,7 +17,7 @@ def _clean_text(t: str) -> str:
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
-def _is_code_heavy(t: str, symbol_threshold: float = 0.12) -> bool:
+def _is_code_heavy(t: str, symbol_threshold: float = 0.3) -> bool:
     if not t:
         return True
     total = max(1, len(t))
@@ -109,7 +109,7 @@ def hybrid_retrieve(query, top_k_dense=5, top_k_sparse=5, alpha=0.7, merged_k=5)
             combined[key]["score"]+= (1-alpha)*r["score"]
     merged=list(combined.values())
     merged.sort(key=lambda x:x["score"],reverse=True)
-    merged = [m for m in merged if not _is_code_heavy(m["text"])]
+
     return merged[:merged_k]
 
 def query_vector_db(query, top_k=5):

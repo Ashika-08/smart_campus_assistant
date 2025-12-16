@@ -50,7 +50,11 @@ class KnowledgeGraph:
         seen=set()
         for t,l in combined:
             key = _normalize_entity_name(t)
-            if key and key.lower() not in seen:
+           
+            if not key or len(key) < 3 or re.match(r'^[\d\W]+$', key):
+                continue
+                
+            if key.lower() not in seen:
                 seen.add(key.lower())
                 uniq.append((key,l))
         return uniq
@@ -70,7 +74,7 @@ class KnowledgeGraph:
             text = ch.get("text","")
             chunk_label=f"{source_name}_chunk_{ch['index']}"
             self.add_chunk_node(chunk_label, chunk_index=ch["index"], source=source_name)
-            # ents=self.extract_entities(text)
+            
             ents=self.extract_entities(text)
             for ent_text, ent_label in ents:
                 ent_norm=_normalize_entity_name(ent_text)
@@ -88,6 +92,24 @@ class KnowledgeGraph:
 
     def to_dict(self):
         return {"nodes":[{"id":n, **self.g.nodes[n]} for n in self.g.nodes],"edges":[{"source":u,"target":v, **self.g.edges[u,v]} for u,v in self.g.edges]}
+
+    def get_subgraph(self, top_k: int = None):
+        if not top_k or top_k >= len(self.g.nodes):
+            return self.to_dict()
+        
+       
+        centrality = nx.degree_centrality(self.g)
+        
+        sorted_nodes = sorted(centrality.items(), key=lambda x: x[1], reverse=True)
+        top_nodes = [n for n, c in sorted_nodes[:top_k]]
+        
+        
+        subg = self.g.subgraph(top_nodes)
+        
+        return {
+            "nodes": [{"id": n, **subg.nodes[n]} for n in subg.nodes],
+            "edges": [{"source": u, "target": v, **subg.edges[u,v]} for u, v in subg.edges]
+        }
 
 _KG = KnowledgeGraph()
 _KG_STORAGE = {"default": _KG}

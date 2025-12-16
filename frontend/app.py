@@ -1,22 +1,33 @@
 import streamlit as st
 import requests
 import json
+import io
+from gtts import gTTS
+import speech_recognition as sr
+from streamlit_mic_recorder import mic_recorder
+from streamlit_agraph import agraph, Node, Edge, Config
 
-# Configuration
+
 API_URL = "http://127.0.0.1:8000"
 st.set_page_config(page_title="Smart Campus Assistant", layout="wide")
 
-# Session State Init
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "uploaded_file" not in st.session_state:
     st.session_state.uploaded_file = None
+if "user_prompt" not in st.session_state:
+    st.session_state.user_prompt = None
 
-# Sidebar
+def submit_chat():
+    st.session_state.user_prompt = st.session_state.chat_input_box
+    st.session_state.chat_input_box = ""
+
+
 with st.sidebar:
     st.title("Campus Assistant")
     st.markdown("---")
-    nav = st.radio("Navigate", ["Dashboard", "Chat Assistant", "Knowledge Graph", "Study Mode"])
+    nav = st.radio("Navigate", ["Dashboard", "Chat Assistant", "Study Mode"])
     
     st.markdown("---")
     st.caption("Backend Status")
@@ -26,15 +37,17 @@ with st.sidebar:
     except:
         st.error("Offline")
 
-# --- DASHBOARD / UPLOAD ---
+
 if nav == "Dashboard":
     st.header("📚 Dashboard & Upload")
     
-    uploaded = st.file_uploader("Upload Course Material (PDF, DOCX, IMG)", type=["pdf", "docx", "png", "jpg", "jpeg"])
+   
+    st.subheader("📤 Upload New Material")
+    uploaded = st.file_uploader("Upload Course Material (PDF, DOCX, PPTX, IMG)", type=["pdf", "docx", "pptx", "png", "jpg", "jpeg"])
     
     if uploaded:
-        if st.button("Process File"):
-            with st.spinner("Uploading & Processing..."):
+        if st.button("Process & Share File"):
+            with st.spinner("Uploading to Repository..."):
                 files = {"file": (uploaded.name, uploaded, uploaded.type)}
                 try:
                     resp = requests.post(f"{API_URL}/upload", files=files, timeout=300)
@@ -42,29 +55,152 @@ if nav == "Dashboard":
                         st.success(f"Success! Processed {resp.json().get('chunks')} chunks.")
                         st.session_state.uploaded_file = uploaded.name
                         
-                        # Trigger KG Build automatically
+                        
                         with st.spinner("Building Knowledge Graph..."):
                              requests.post(f"{API_URL}/build_kg", params={"filename": uploaded.name})
                              st.success("Knowledge Graph Built!")
+                        
+                        st.balloons()
+                        st.rerun()
                     else:
                         st.error(f"Failed: {resp.text}")
                 except Exception as e:
                     st.error(f"Error: {e}")
 
     if st.session_state.uploaded_file:
-        st.info(f"Active File: **{st.session_state.uploaded_file}**")
+        st.success(f"✅ Active Context: **{st.session_state.uploaded_file}**")
+        
+        
+        if st.checkbox("🕸️ View Knowledge Graph", value=False):
+            st.divider()
+            st.subheader("Knowledge Graph")
+            
+            
+            if st.button("Refresh Graph Data"):
+                 
+                 requests.post(f"{API_URL}/build_kg", params={"filename": st.session_state.uploaded_file})
+            
+            
+            detail_level = st.select_slider(
+                "Detail Level", 
+                options=["Low", "Medium", "High", "All"], 
+                value="Medium"
+            )
+            
+            limit_map = {"Low": 20, "Medium": 50, "High": 100, "All": None}
+            limit = limit_map[detail_level]
+            
+           
+            with st.spinner(f"Visualizing ({detail_level})..."):
+                try:
+                    
+                    resp = requests.get(f"{API_URL}/get_graph", params={"limit": limit})
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        kg_data = data.get("graph", {})
+                        
+                        if kg_data:
+                            nodes = []
+                            edges = []
+                            for n in kg_data.get("nodes", []):
+                                label_text = n.get("id", "?")
+                                display_label = (label_text[:20] + '..') if len(label_text) > 20 else label_text
+                                nodes.append(Node(
+                                    id=n["id"], 
+                                    label=display_label, 
+                                    size=20,
+                                    shape="dot",
+                                    color="#FF4B4B",
+                                    font={"color": "white"} 
+                                ))
+                            for e in kg_data.get("edges", []):
+                                edges.append(Edge(
+                                    source=e["source"], 
+                                    target=e["target"], 
+                                    label=e.get("relation", ""),
+                                    color="#555"
+                                ))
+                                
+                            config = Config(
+                                width=900, 
+                                height=600, 
+                                directed=True, 
+                                physics=True, 
+                                hierarchical=False,
+                                
+                                barnesHut={
+                                    "gravitationalConstant": -20000,
+                                    "centralGravity": 0.3, 
+                                    "springLength": 120, 
+                                    "springConstant": 0.04, 
+                                    "damping": 0.09, 
+                                    "avoidOverlap": 1
+                                }
+                            )
+                            st.write(f"**Nodes:** {len(nodes)} | **Edges:** {len(edges)}")
+                            agraph(nodes=nodes, edges=edges, config=config)
+                        else:
+                            st.info("No relationships found.")
+                except Exception as e:
+                    st.error(f"Graph Error: {e}")
+            st.divider()
 
+
+
+# --- CHAT ASSISTANT ---
 # --- CHAT ASSISTANT ---
 elif nav == "Chat Assistant":
     st.header("💬 Chat with your Materials")
     
-    # Display history
+    
+    with st.container():
+        c1, c2 = st.columns([12, 1]) 
+        
+        with c1:
+            user_text = st.text_input(
+                "Ask a question...",
+                key="chat_input_box",
+                placeholder="Type your question...",
+                label_visibility="collapsed",
+                on_change=submit_chat
+            )
+            
+        with c2:
+            mic_clicked = st.button("🎤", key="mic_btn", help="Speak", use_container_width=True)
+
+    st.divider()
+
+    
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Ask a question..."):
+
+
+    voice_text = None
+
+    if mic_clicked:
+        r = sr.Recognizer()
+        with st.spinner("Listening..."):
+            try:
+                with sr.Microphone() as source:
+                    r.adjust_for_ambient_noise(source)
+                    audio_data = r.listen(source, timeout=5)
+                voice_text = r.recognize_google(audio_data)
+                st.session_state.last_voice_input = voice_text
+            except Exception as e:
+                st.error(f"Mic Error: {e}")
+
+    if "last_voice_input" in st.session_state:
+        voice_text = st.session_state.last_voice_input
+        del st.session_state.last_voice_input
+
+    
+    prompt = voice_text or st.session_state.user_prompt
+
+    if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
+
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -72,37 +208,36 @@ elif nav == "Chat Assistant":
             with st.spinner("Thinking..."):
                 try:
                     params = {"query": prompt, "hops": 1}
-                    resp = requests.get(f"{API_URL}/hybrid_graph_answer", params=params, timeout=120)
+                    resp = requests.get(f"{API_URL}/hybrid_graph_answer",
+                                        params=params, timeout=120)
+                    
                     if resp.status_code == 200:
                         ans = resp.json().get("answer", "No answer generated.")
                         st.markdown(ans)
-                        st.session_state.messages.append({"role": "assistant", "content": ans})
+
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": ans}
+                        )
+
+                       
+                        try:
+                            audio_stream = io.BytesIO()
+                            tts = gTTS(text=ans, lang='en')
+                            tts.write_to_fp(audio_stream)
+                            st.audio(audio_stream, format='audio/mp3', autoplay=False)
+                        except Exception as e:
+                            st.warning(f"TTS Error: {e}")
+
                     else:
-                        st.error("Failed to get answer.")
+                        st.error("Failed to get answer from backend.")
+
                 except Exception as e:
                     st.error(f"Error: {e}")
+        
+        
+        st.session_state.user_prompt = None
 
-# --- KNOWLEDGE GRAPH ---
-elif nav == "Knowledge Graph":
-    st.header("🕸️ Knowledge Graph")
-    if not st.session_state.uploaded_file:
-        st.warning("Please upload a file first.")
-    else:
-        if st.button("Refresh Graph Data"):
-            try:
-                # We don't have a full dump endpoint, but we can query specific entity or build again
-                # For demo, let's just show stats if we stored them, or re-trigger build to get stats
-                resp = requests.post(f"{API_URL}/build_kg", params={"filename": st.session_state.uploaded_file})
-                if resp.status_code == 200:
-                    data = resp.json()
-                    col1, col2 = st.columns(2)
-                    col1.metric("Nodes", data.get("num_nodes", 0))
-                    col2.metric("Edges", data.get("num_edges", 0))
-                    st.json(data.get("graph"))
-            except Exception as e:
-                st.error(f"Error: {e}")
 
-# --- STUDY MODE ---
 elif nav == "Study Mode":
     st.header("📝 Study Aids")
     
@@ -169,7 +304,7 @@ elif nav == "Study Mode":
 
         if "flashcards" in st.session_state:
             for i, card in enumerate(st.session_state.flashcards):
-                # Use expander to simulate flip
+                
                 with st.expander(f"Card {i+1}: {card.get('front')}"):
                     st.info(f"Answer: {card.get('back')}")
 

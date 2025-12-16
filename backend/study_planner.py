@@ -48,6 +48,9 @@ def generate_study_plan(text, days=5):
         except json.JSONDecodeError:
             plan = ast.literal_eval(clean_json)
 
+        
+        plan.sort(key=lambda x: x.get("day", 0))
+
         return plan
     except Exception as e:
         print(f"Study Plan generation failed: {e}")

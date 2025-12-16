@@ -67,6 +67,8 @@ def process_file(filename: str):
         raise HTTPException(status_code=404, detail="File not found")
     return {"chunks": chunks}
 
+
+
 @app.get("/ask")
 def ask_question(question: str, top_k: int = 5):
     results = query_vector_db(question, top_k=top_k)
@@ -102,6 +104,12 @@ def build_kg(filename: str):
         raise HTTPException(status_code=404, detail="No chunks found")
     kg_data = build_and_save_kg(chunks, source_name=filename)
     return {"status": "built", "num_nodes": len(kg_data["nodes"]), "num_edges": len(kg_data["edges"]), "graph": kg_data}
+
+@app.get("/get_graph")
+def get_graph_endpoint(limit: int = None):
+    kg = get_kg()
+    data = kg.get_subgraph(top_k=limit)
+    return {"num_nodes": len(data["nodes"]), "num_edges": len(data["edges"]), "graph": data}
 
 @app.get("/kg_query")
 def kg_query(entity: str, hops: int = 1):
